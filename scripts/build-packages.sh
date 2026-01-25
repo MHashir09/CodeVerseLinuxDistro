@@ -256,6 +256,19 @@ update_repo_db() {
     # Create new database
     if ls *.pkg.tar.zst 1> /dev/null 2>&1; then
         repo-add cvh-linux.db.tar.gz *.pkg.tar.zst
+
+        # Replace symlinks with actual files (needed for GitHub raw URLs)
+        # repo-add creates symlinks: cvh-linux.db -> cvh-linux.db.tar.gz
+        # GitHub raw doesn't follow symlinks, so we need real files
+        for link in cvh-linux.db cvh-linux.files; do
+            if [[ -L "$link" ]]; then
+                target=$(readlink "$link")
+                rm "$link"
+                cp "$target" "$link"
+                log_info "Converted symlink $link to file"
+            fi
+        done
+
         log_success "Repository database updated"
     else
         log_warn "No packages found to add to repository"
