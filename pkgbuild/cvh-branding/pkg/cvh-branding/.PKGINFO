@@ -6,7 +6,7 @@ xdata = pkgtype=pkg
 pkgver = 0.1.0-1
 pkgdesc = CVH Linux branding and default configurations
 url = https://github.com/codeversehub/cvh-linux
-builddate = 1769338742
+builddate = 1769407671
 packager = Unknown Packager
 size = 421
 arch = any

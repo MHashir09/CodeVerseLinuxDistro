@@ -467,9 +467,10 @@ configure_system() {
     local current=0
 
     # Create a configuration script to run in chroot
-    cat > /mnt/tmp/configure.sh << CONFIGURE_SCRIPT
+    # Use /mnt/root/ which always exists after pacstrap
+    cat > /mnt/root/configure.sh << CONFIGURE_SCRIPT
 #!/bin/bash
-set -e
+# Don't use set -e as some commands may fail non-fatally
 
 # Timezone
 ln -sf /usr/share/zoneinfo/$TIMEZONE /etc/localtime
@@ -509,15 +510,29 @@ DOCUMENTATION_URL="https://wiki.cvhlinux.org"
 LOGO=cvh-logo
 EOF
 
-# Ensure zsh is in /etc/shells
-grep -q "/usr/bin/zsh" /etc/shells || echo "/usr/bin/zsh" >> /etc/shells
-grep -q "/bin/zsh" /etc/shells || echo "/bin/zsh" >> /etc/shells
+# Set GRUB distributor name
+sed -i 's/^GRUB_DISTRIBUTOR=.*/GRUB_DISTRIBUTOR="CVH Linux"/' /etc/default/grub 2>/dev/null || \
+    echo 'GRUB_DISTRIBUTOR="CVH Linux"' >> /etc/default/grub
 
-# Create user (add to seat group for seatd)
+# Ensure zsh is in /etc/shells
+echo "/usr/bin/zsh" >> /etc/shells
+echo "/bin/zsh" >> /etc/shells
+
+# Create seat group if it doesn't exist (for seatd)
+getent group seat >/dev/null || groupadd seat
+
+# Create user
 useradd -m -G wheel,audio,video,input,seat -s /usr/bin/zsh $USERNAME
 
-# Ensure shell is set (in case useradd didn't work)
-chsh -s /usr/bin/zsh $USERNAME
+# Force set shell using usermod (more reliable than chsh)
+usermod -s /usr/bin/zsh $USERNAME
+
+# Also set root's shell to zsh
+usermod -s /usr/bin/zsh root
+
+# Verify shell was set
+echo "User shell set to: \$(getent passwd $USERNAME | cut -d: -f7)"
+echo "Root shell set to: \$(getent passwd root | cut -d: -f7)"
 
 # Configure sudo
 echo "%wheel ALL=(ALL:ALL) ALL" > /etc/sudoers.d/wheel
@@ -589,7 +604,13 @@ ZSHRC_EOF
 chown $USERNAME:$USERNAME /home/$USERNAME/.zshrc
 CONFIGURE_SCRIPT
 
-    chmod +x /mnt/tmp/configure.sh
+    chmod +x /mnt/root/configure.sh
+
+    # Verify script was created
+    if [[ ! -f /mnt/root/configure.sh ]]; then
+        echo -e "\n  ${RED}✗${NC} Failed to create configuration script!"
+        exit 1
+    fi
 
     # Run configuration with progress
     for ((i=0; i<total; i++)); do
@@ -598,8 +619,9 @@ CONFIGURE_SCRIPT
         sleep 0.5
     done
 
-    arch-chroot /mnt /tmp/configure.sh
-    rm /mnt/tmp/configure.sh
+    echo -e "\n\n  ${BLUE}●${NC} Running system configuration..."
+    arch-chroot /mnt /bin/bash /root/configure.sh
+    rm -f /mnt/root/configure.sh
 
     # Install GRUB bootloader (run separately for better error handling)
     echo -e "\n\n  ${BLUE}●${NC} Installing GRUB bootloader..."
