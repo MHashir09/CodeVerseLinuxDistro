@@ -128,8 +128,8 @@ seatd
 # HYPRLAND WM AND DEPENDENCIES
 # =============================================================================
 hyprland
-xdg-desktop-portal-hyprland 
-hyprpolkitagent
+xdg-desktop-portal-wlr
+polkit-gnome
 
 # =============================================================================
 # DISPLAY MANAGER (LY)
@@ -142,7 +142,7 @@ ly
 gum
 zoxide
 fd
-rg
+ripgrep
 bat
 eza
 git
