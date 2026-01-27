@@ -854,6 +854,18 @@ export EDITOR="nano"
 export QT_QPA_PLATFORM="wayland"
 export MOZ_ENABLE_WAYLAND="1"
 
+# ZSH History Configuration
+export HISTFILE="\$HOME/.zsh_history"
+export HISTSIZE=10000
+export SAVEHIST=10000
+setopt APPEND_HISTORY
+setopt SHARE_HISTORY
+setopt HIST_IGNORE_DUPS
+setopt HIST_IGNORE_ALL_DUPS
+setopt HIST_REDUCE_BLANKS
+setopt HIST_SAVE_NO_DUPS
+setopt INC_APPEND_HISTORY
+
 alias ls='ls --color=auto'
 alias ll='ls -la'
 
@@ -863,6 +875,10 @@ if [[ -z "\$WAYLAND_DISPLAY" ]] && [[ "\$XDG_VTNR" -ne 1 ]]; then
     exec COMPOSITOR_SESSION
 fi
 ZSHRC_EOF
+
+# Create initial history file with proper permissions
+su - $USERNAME -c 'touch ~/.zsh_history'
+su - $USERNAME -c 'chmod 600 ~/.zsh_history'
 
 # Replace compositor session based on selection
 if [[ "$COMPOSITOR" == "niri" ]]; then
@@ -879,11 +895,12 @@ cat > /home/$USERNAME/.config/fastfetch/config.jsonc << 'FASTFETCH_EOF'
 {
     "$schema": "https://github.com/fastfetch-cli/fastfetch/raw/dev/doc/json_schema.json",
     "logo": {
-        "type": "builtin",
-        "source": "arch_small",
+        "type": "file",
+        "source": "~/.config/fastfetch/ascii_art.txt",
         "color": {
             "1": "cyan",
-            "2": "cyan"
+            "2": "blue",
+            "3": "white"
         }
     },
     "display": {
@@ -952,67 +969,14 @@ FASTFETCH_EOF
 
 # Create custom ASCII art template
 cat > /home/$USERNAME/.config/fastfetch/ascii_art.txt << 'ASCII_EOF'
- ██████████████████████████████████████████████████████████████████████████████
+     ██████╗██╗   ██╗██╗  ██╗    ██╗     ██╗███╗   ██╗██╗   ██╗██╗  ██╗
+    ██╔════╝██║   ██║██║  ██║    ██║     ██║████╗  ██║██║   ██║╚██╗██╔╝
+    ██║     ██║   ██║███████║    ██║     ██║██╔██╗ ██║██║   ██║ ╚███╔╝
+    ██║     ╚██╗ ██╔╝██╔══██║    ██║     ██║██║╚██╗██║██║   ██║ ██╔██╗
+    ╚██████╗ ╚████╔╝ ██║  ██║    ███████╗██║██║ ╚████║╚██████╔╝██╔╝ ██╗
+     ╚═════╝  ╚═══╝  ╚═╝  ╚═╝    ╚══════╝╚═╝╚═╝  ╚═══╝ ╚═════╝ ╚═╝  ╚═╝
 
-████████████████████████████████████████████████████████████████████████████████
-
-████████████████████████████████████████████████████████████████████████████████
-
-████████████████████████████████████████████████████████████████████████████████
-
-███████████████▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀███████████████
-
-████████████▀▒▒▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▓▄▓▓▓▓▓▓▓▓▓▓▓▓▄▒▒▀████████████
-
-███████████▌▒▒████████████████████████████████████████████████████▒▒▀███████████
-
-███████████▌▒▐████████████████████████████████████████████████████▌▒╫███████████
-
-███████████▌▒▐████████████████████████████▀▓██████████████████████▌▒╫███████████
-
-███████████▌▒╫███████████████████████████▒▒╫██████████████████████▌▒╫███████████
-
-███████████▌▒╫████████████████▀▀████████▌▒▒█████▀▀████████████████▌▒╫███████████
-
-███████████▌▒╫█████████████▀▒▒▄▓████████▒▒██████▓▒▒▒▀█████████████▌▒╫███████████
-
-███████████▌▒╫██████████▀▒▒▒▓██████████▒▒╫█████████▄▒▒▒▀██████████▌▒╫███████████
-
-███████████▌▒╫████████▒▒▒▄████████████▌▒▒█████████████▄▒▒▀████████▌▒╫███████████
-
-███████████▌▒╫████████▄▒▒▒▀███████████▒▒█████████████▀▒▒▒▓████████▌▒╫███████████
-
-███████████▌▒╫██████████▓▄▒▒▒▀███████▒▒▓██████████▀▒▒▒▓███████████▌▒╫███████████
-
-███████████▌▒╫██████████████▄▒▒▀████▌▒▒█████████▒▒▒▄██████████████▌▒╫███████████
-
-███████████▌▒╫████████████████▓█████▒▒████████████████████████████▌▒╫███████████
-
-███████████▌▒╫█████████████████████▓▄▓████████████████████████████▌▒╫███████████
-
-███████████▌▒╫████████████████████████████████████████████████████▌▒╫███████████
-
-███████████▌▒╫████████████████████████████████████████████████████▌▒╫███████████
-
-███████████▌▒▒██████████████████████████████████████████████████▓█▒▒╫███████████
-
-████████████▓▒▒▒▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▒▒▒▄████████████
-
-███████████████▓▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▒▒▒▄▄▄▄▄▄▄▄▒▒▒▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▓▓██████████████
-
-█████████████████████████████████▌▒╫████████▌▒╫█████████████████████████████████
-
-█████████████████████████████████▌▒╫████████▌▒╫█████████████████████████████████
-
-███████████████████████████▀▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒███████████████████████████
-
-████████████████████████████████████████████████████████████████████████████████
-
-████████████████████████████████████████████████████████████████████████████████
-
-████████████████████████████████████████████████████████████████████████████████
-
-██████████████████████████████████████████████████████████████████████
+                          CodeVerse Hub Linux
 ASCII_EOF
 
 # Create instructions file for custom ASCII art
@@ -1077,12 +1041,38 @@ CONFIGURE_SCRIPT
         echo -e "  ${YELLOW}⚠${NC}  CVH packages not found on ISO"
     fi
 
-    # Copy mirrorlist from live system to installed system
-    echo -e "  ${BLUE}●${NC} Copying package mirrorlist..."
-    if [[ -f /etc/pacman.d/mirrorlist ]]; then
-        mkdir -p /mnt/etc/pacman.d
-        cp /etc/pacman.d/mirrorlist /mnt/etc/pacman.d/mirrorlist
-        echo -e "  ${GREEN}✓${NC} Mirrorlist copied"
+    # Create working mirrorlist for installed system
+    echo -e "  ${BLUE}●${NC} Creating package mirrorlist..."
+    mkdir -p /mnt/etc/pacman.d
+    cat > /mnt/etc/pacman.d/mirrorlist << 'MIRRORLIST_EOF'
+# Arch Linux mirrorlist - CVH Linux
+# Israeli mirrors
+Server = https://mirror.isoc.org.il/pub/archlinux/$repo/os/$arch
+Server = https://archlinux.mivzakim.net/$repo/os/$arch
+# Global mirrors
+Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch
+Server = https://mirrors.kernel.org/archlinux/$repo/os/$arch
+Server = https://mirror.rackspace.com/archlinux/$repo/os/$arch
+MIRRORLIST_EOF
+    echo -e "  ${GREEN}✓${NC} Mirrorlist created"
+
+    # Ensure pacman.conf has repository configuration
+    echo -e "  ${BLUE}●${NC} Configuring package repositories..."
+    if [[ -f /mnt/etc/pacman.conf ]]; then
+        # Check if repos are already configured
+        if ! grep -q "^\[core\]" /mnt/etc/pacman.conf; then
+            cat >> /mnt/etc/pacman.conf << 'PACMAN_REPOS_EOF'
+
+[core]
+Include = /etc/pacman.d/mirrorlist
+
+[extra]
+Include = /etc/pacman.d/mirrorlist
+PACMAN_REPOS_EOF
+            echo -e "  ${GREEN}✓${NC} Repositories configured"
+        else
+            echo -e "  ${GREEN}✓${NC} Repositories already configured"
+        fi
     fi
 
     chmod +x /mnt/root/configure.sh
