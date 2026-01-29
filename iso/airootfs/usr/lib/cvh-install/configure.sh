@@ -84,8 +84,11 @@ mkdir -p /etc/ly
 cat > /etc/ly/config.ini << 'LY_EOF'
 # CVH Linux Ly Configuration
 
-animation = 0
-hide_borders = 0
+# Disable the doom-fire background animation
+animate = false
+
+# Clean minimal appearance
+hide_borders = true
 
 # Run on tty1 (default boot experience)
 tty = 1
@@ -93,18 +96,26 @@ tty = 1
 waylandsessions = /usr/share/wayland-sessions
 
 # Save last session and user
-save = 1
+save = true
 save_file = /var/cache/ly/save
+
+# Clear password on wrong input
+clear_password = true
 LY_EOF
 
 mkdir -p /var/cache/ly
-chmod 755 /var/cache/ly
+chmod 777 /var/cache/ly
 
 # Enable services
 systemctl enable NetworkManager >/dev/null 2>&1
 systemctl enable systemd-timesyncd >/dev/null 2>&1
 systemctl enable seatd >/dev/null 2>&1
-systemctl enable ly.service >/dev/null 2>&1
+
+# Disable getty on tty1 to prevent conflict with Ly
+systemctl disable getty@tty1.service >/dev/null 2>&1
+
+# Enable Ly display manager on tty1
+systemctl enable ly@tty1.service >/dev/null 2>&1
 
 # Install CVH custom packages from local cache
 echo "Installing CVH custom packages..."
@@ -140,6 +151,21 @@ EOF
 # Set GRUB distributor name
 sed -i 's/^GRUB_DISTRIBUTOR=.*/GRUB_DISTRIBUTOR="CVH Linux"/' /etc/default/grub 2>/dev/null || \
     echo 'GRUB_DISTRIBUTOR="CVH Linux"' >> /etc/default/grub
+
+# Install CVH Nordic GRUB theme
+if [[ -d /usr/share/cvh-linux/grub-theme/cvh-nordic ]]; then
+    echo "Installing GRUB theme..."
+    mkdir -p /boot/grub/themes
+    cp -r /usr/share/cvh-linux/grub-theme/cvh-nordic /boot/grub/themes/
+
+    # Configure GRUB to use the theme
+    sed -i 's|^#*GRUB_THEME=.*|GRUB_THEME="/boot/grub/themes/cvh-nordic/theme.txt"|' /etc/default/grub 2>/dev/null
+    grep -q '^GRUB_THEME=' /etc/default/grub || \
+        echo 'GRUB_THEME="/boot/grub/themes/cvh-nordic/theme.txt"' >> /etc/default/grub
+    echo "  ✓ GRUB theme installed"
+else
+    echo "  ⚠ GRUB theme not found, skipping"
+fi
 
 # Ensure zsh is in /etc/shells
 echo "/usr/bin/zsh" >> /etc/shells

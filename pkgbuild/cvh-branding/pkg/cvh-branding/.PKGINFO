@@ -4,10 +4,10 @@ pkgname = cvh-branding
 pkgbase = cvh-branding
 xdata = pkgtype=pkg
 pkgver = 0.1.0-1
-pkgdesc = CVH Linux branding and default configurations
+pkgdesc = CVH Linux branding, GRUB theme, and default configurations
 url = https://github.com/codeversehub/cvh-linux
-builddate = 1769517999
+builddate = 1769695557
 packager = Unknown Packager
-size = 421
+size = 22916
 arch = any
 license = GPL3

@@ -9,6 +9,7 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 PKGBUILD_DIR="$PROJECT_ROOT/pkgbuild"
 SRC_DIR="$PROJECT_ROOT/src"
 REPO_DIR="$PROJECT_ROOT/repo/x86_64"
+GRUB_THEME_DIR="$PROJECT_ROOT/configs/grub/themes/cvh-nordic"
 
 # Colors
 RED='\033[0;31m'
@@ -29,6 +30,79 @@ check_rust() {
         exit 1
     fi
     log_success "Rust toolchain found"
+}
+
+# Generate GRUB theme assets
+generate_grub_theme() {
+    log_info "Generating GRUB theme assets..."
+
+    # Check for ImageMagick
+    if ! command -v convert &> /dev/null; then
+        log_warn "ImageMagick not found, skipping theme generation"
+        log_warn "Install with: sudo pacman -S imagemagick"
+        return 0
+    fi
+
+    mkdir -p "$GRUB_THEME_DIR/icons"
+
+    # Nord colors
+    local NORD0="#2E3440"  # Polar Night (darkest)
+    local NORD1="#3B4252"  # Polar Night
+    local NORD3="#4C566A"  # Polar Night (lightest)
+    local NORD4="#D8DEE9"  # Snow Storm
+    local NORD8="#88C0D0"  # Frost (cyan)
+
+    # Generate background (1920x1080 with subtle gradient)
+    log_info "  Creating background.png..."
+    convert -size 1920x1080 \
+        -define gradient:direction=south \
+        gradient:"$NORD0"-"$NORD1" \
+        "$GRUB_THEME_DIR/background.png"
+
+    # Generate menu icons (32x32)
+    log_info "  Creating menu icons..."
+
+    # Linux icon (simple penguin silhouette approximation)
+    convert -size 32x32 xc:transparent \
+        -fill "$NORD4" \
+        -draw "circle 16,12 16,4" \
+        -draw "roundrectangle 8,14 24,28 4,4" \
+        "$GRUB_THEME_DIR/icons/linux.png"
+
+    # CVH/Arch icon
+    convert -size 32x32 xc:transparent \
+        -fill "$NORD8" \
+        -draw "polygon 16,4 28,28 4,28" \
+        -fill "$NORD0" \
+        -draw "polygon 16,14 22,24 10,24" \
+        "$GRUB_THEME_DIR/icons/arch.png"
+
+    cp "$GRUB_THEME_DIR/icons/arch.png" "$GRUB_THEME_DIR/icons/cvh.png"
+
+    # Reboot icon (circular arrow)
+    convert -size 32x32 xc:transparent \
+        -fill "$NORD4" \
+        -stroke "$NORD4" -strokewidth 3 \
+        -draw "arc 6,6 26,26 30,330" \
+        -draw "polygon 24,4 28,10 22,10" \
+        "$GRUB_THEME_DIR/icons/reboot.png"
+
+    # Shutdown icon (power symbol)
+    convert -size 32x32 xc:transparent \
+        -fill none -stroke "$NORD4" -strokewidth 3 \
+        -draw "arc 8,10 24,26 -60,240" \
+        -draw "line 16,6 16,16" \
+        "$GRUB_THEME_DIR/icons/shutdown.png"
+
+    # UEFI settings icon (gear)
+    convert -size 32x32 xc:transparent \
+        -fill "$NORD4" \
+        -draw "circle 16,16 16,8" \
+        -fill "$NORD0" \
+        -draw "circle 16,16 16,12" \
+        "$GRUB_THEME_DIR/icons/uefi.png"
+
+    log_success "GRUB theme assets generated"
 }
 
 # Build cvh-fuzzy
@@ -177,21 +251,23 @@ create_branding_pkgbuild() {
 
     mkdir -p "$PKGBUILD_DIR/cvh-branding"
 
-    cat > "$PKGBUILD_DIR/cvh-branding/PKGBUILD" <<'EOF'
+    cat > "$PKGBUILD_DIR/cvh-branding/PKGBUILD" <<EOF
 # Maintainer: CVH Linux Team
 pkgname=cvh-branding
 pkgver=0.1.0
 pkgrel=1
-pkgdesc="CVH Linux branding and default configurations"
+pkgdesc="CVH Linux branding, GRUB theme, and default configurations"
 arch=('any')
 url="https://github.com/codeversehub/cvh-linux"
 license=('GPL3')
 depends=()
 source=()
 
+_cvh_root="$PROJECT_ROOT"
+
 package() {
-    # MOTD - welcome message (doesn't conflict with filesystem)
-    install -Dm644 /dev/stdin "$pkgdir/etc/motd" <<'MOTDEOF'
+    # MOTD - welcome message
+    install -Dm644 /dev/stdin "\$pkgdir/etc/motd" <<'MOTDEOF'
 Welcome to CVH Linux!
 
 Quick Start:
@@ -199,13 +275,13 @@ Quick Start:
   - Mod+D         Application launcher
   - Mod+1-9       Switch workspaces
   - Mod+Shift+Q   Close window
-  - Mod+Shift+E   Exit Niri
+  - Mod+Shift+E   Exit compositor
 
 For more info: https://github.com/codeversehub/cvh-linux
 MOTDEOF
 
-    # CVH Linux info file (custom location, no conflicts)
-    install -Dm644 /dev/stdin "$pkgdir/usr/share/cvh-linux/info" <<'INFOEOF'
+    # CVH Linux info file
+    install -Dm644 /dev/stdin "\$pkgdir/usr/share/cvh-linux/info" <<'INFOEOF'
 NAME="CVH Linux"
 PRETTY_NAME="CVH Linux"
 ID=cvh
@@ -213,6 +289,28 @@ VERSION_ID=0.1
 HOME_URL="https://codeversehub.dev"
 DOCUMENTATION_URL="https://github.com/codeversehub/cvh-linux"
 INFOEOF
+
+    # Install GRUB theme
+    install -dm755 "\$pkgdir/usr/share/cvh-linux/grub-theme/cvh-nordic"
+    install -dm755 "\$pkgdir/usr/share/cvh-linux/grub-theme/cvh-nordic/icons"
+
+    # Copy theme files
+    if [[ -f "\$_cvh_root/configs/grub/themes/cvh-nordic/theme.txt" ]]; then
+        install -Dm644 "\$_cvh_root/configs/grub/themes/cvh-nordic/theme.txt" \\
+            "\$pkgdir/usr/share/cvh-linux/grub-theme/cvh-nordic/theme.txt"
+    fi
+
+    if [[ -f "\$_cvh_root/configs/grub/themes/cvh-nordic/background.png" ]]; then
+        install -Dm644 "\$_cvh_root/configs/grub/themes/cvh-nordic/background.png" \\
+            "\$pkgdir/usr/share/cvh-linux/grub-theme/cvh-nordic/background.png"
+    fi
+
+    # Copy icons
+    for icon in "\$_cvh_root/configs/grub/themes/cvh-nordic/icons"/*.png; do
+        if [[ -f "\$icon" ]]; then
+            install -Dm644 "\$icon" "\$pkgdir/usr/share/cvh-linux/grub-theme/cvh-nordic/icons/\$(basename \$icon)"
+        fi
+    done
 }
 EOF
 
@@ -284,6 +382,9 @@ main() {
     echo
 
     check_rust
+
+    # Generate GRUB theme assets
+    generate_grub_theme
 
     # Create PKGBUILDs
     create_fuzzy_pkgbuild

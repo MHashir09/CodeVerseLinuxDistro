@@ -70,6 +70,19 @@ prepare_profile() {
     rm -rf "$WORK_DIR/profile"
     cp -r "$PROFILE_DIR" "$WORK_DIR/profile"
 
+    # Sync GRUB theme from configs to iso directory
+    local theme_src="$PROJECT_ROOT/configs/grub/themes/cvh-nordic"
+    local theme_iso="$PROJECT_ROOT/iso/grub/themes/cvh-nordic"
+
+    if [[ -d "$theme_src" ]]; then
+        log_info "Syncing GRUB theme..."
+        mkdir -p "$theme_iso"
+        cp -r "$theme_src"/* "$theme_iso/"
+        log_success "GRUB theme synced to ISO profile"
+    else
+        log_warn "GRUB theme not found at $theme_src"
+    fi
+
     # Make scripts executable
     chmod +x "$WORK_DIR/profile/profiledef.sh"
 

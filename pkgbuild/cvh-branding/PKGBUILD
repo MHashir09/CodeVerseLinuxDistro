@@ -2,15 +2,17 @@
 pkgname=cvh-branding
 pkgver=0.1.0
 pkgrel=1
-pkgdesc="CVH Linux branding and default configurations"
+pkgdesc="CVH Linux branding, GRUB theme, and default configurations"
 arch=('any')
 url="https://github.com/codeversehub/cvh-linux"
 license=('GPL3')
 depends=()
 source=()
 
+_cvh_root="/home/ofek/codeversehubv2distro/CodeVerseLinuxDistro"
+
 package() {
-    # MOTD - welcome message (doesn't conflict with filesystem)
+    # MOTD - welcome message
     install -Dm644 /dev/stdin "$pkgdir/etc/motd" <<'MOTDEOF'
 Welcome to CVH Linux!
 
@@ -19,12 +21,12 @@ Quick Start:
   - Mod+D         Application launcher
   - Mod+1-9       Switch workspaces
   - Mod+Shift+Q   Close window
-  - Mod+Shift+E   Exit Niri
+  - Mod+Shift+E   Exit compositor
 
 For more info: https://github.com/codeversehub/cvh-linux
 MOTDEOF
 
-    # CVH Linux info file (custom location, no conflicts)
+    # CVH Linux info file
     install -Dm644 /dev/stdin "$pkgdir/usr/share/cvh-linux/info" <<'INFOEOF'
 NAME="CVH Linux"
 PRETTY_NAME="CVH Linux"
@@ -33,4 +35,26 @@ VERSION_ID=0.1
 HOME_URL="https://codeversehub.dev"
 DOCUMENTATION_URL="https://github.com/codeversehub/cvh-linux"
 INFOEOF
+
+    # Install GRUB theme
+    install -dm755 "$pkgdir/usr/share/cvh-linux/grub-theme/cvh-nordic"
+    install -dm755 "$pkgdir/usr/share/cvh-linux/grub-theme/cvh-nordic/icons"
+
+    # Copy theme files
+    if [[ -f "$_cvh_root/configs/grub/themes/cvh-nordic/theme.txt" ]]; then
+        install -Dm644 "$_cvh_root/configs/grub/themes/cvh-nordic/theme.txt" \
+            "$pkgdir/usr/share/cvh-linux/grub-theme/cvh-nordic/theme.txt"
+    fi
+
+    if [[ -f "$_cvh_root/configs/grub/themes/cvh-nordic/background.png" ]]; then
+        install -Dm644 "$_cvh_root/configs/grub/themes/cvh-nordic/background.png" \
+            "$pkgdir/usr/share/cvh-linux/grub-theme/cvh-nordic/background.png"
+    fi
+
+    # Copy icons
+    for icon in "$_cvh_root/configs/grub/themes/cvh-nordic/icons"/*.png; do
+        if [[ -f "$icon" ]]; then
+            install -Dm644 "$icon" "$pkgdir/usr/share/cvh-linux/grub-theme/cvh-nordic/icons/$(basename $icon)"
+        fi
+    done
 }
