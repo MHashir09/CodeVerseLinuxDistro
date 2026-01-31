@@ -4,6 +4,8 @@
 
 use anyhow::Result;
 use fontdue::{Font, FontSettings};
+use image::imageops::FilterType;
+use std::path::Path;
 use tiny_skia::{
     Color, FillRule, LineCap, LineJoin, Paint, Pixmap, PixmapPaint, PathBuilder, Rect, Stroke,
     Transform,
@@ -207,6 +209,98 @@ impl IconRenderer {
 
             cursor_x += metrics.advance_width;
         }
+    }
+
+    /// Render an image to a pixmap
+    ///
+    /// # Arguments
+    /// * `pixmap` - Target pixmap to draw on
+    /// * `path` - File path to the image (supports png, jpeg, ico)
+    /// * `x` - X position to draw the image
+    /// * `y` - Y position to draw the image
+    /// * `w` - Target width (image will be scaled)
+    /// * `h` - Target height (image will be scaled)
+    pub fn render_image(
+        &self,
+        pixmap: &mut Pixmap,
+        path: &str,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+    ) {
+        // Validate dimensions
+        if w <= 0.0 || h <= 0.0 {
+            return;
+        }
+
+        let target_width = w as u32;
+        let target_height = h as u32;
+
+        if target_width == 0 || target_height == 0 {
+            return;
+        }
+
+        // Load the image from file
+        let img = match image::open(Path::new(path)) {
+            Ok(img) => img,
+            Err(e) => {
+                warn!("Failed to load image '{}': {}", path, e);
+                return;
+            }
+        };
+
+        // Scale the image to the requested dimensions using bilinear filter
+        let scaled = img.resize_exact(target_width, target_height, FilterType::Triangle);
+
+        // Convert to RGBA8
+        let rgba = scaled.to_rgba8();
+
+        // Create a pixmap for the image
+        let img_pixmap = match Pixmap::new(target_width, target_height) {
+            Some(p) => p,
+            None => {
+                warn!("Failed to create pixmap for image '{}'", path);
+                return;
+            }
+        };
+
+        // We need a mutable pixmap to fill
+        let mut img_pixmap = img_pixmap;
+        let pixels = img_pixmap.pixels_mut();
+
+        // Copy image data to pixmap with premultiplied alpha
+        for (i, pixel) in rgba.pixels().enumerate() {
+            let [r, g, b, a] = pixel.0;
+
+            if a == 0 {
+                // Fully transparent, skip (pixmap is already zero-initialized)
+                continue;
+            }
+
+            // Premultiply alpha for tiny-skia
+            let alpha = a as f32 / 255.0;
+            let pm_r = (r as f32 * alpha) as u8;
+            let pm_g = (g as f32 * alpha) as u8;
+            let pm_b = (b as f32 * alpha) as u8;
+
+            if let Some(color) = tiny_skia::PremultipliedColorU8::from_rgba(pm_r, pm_g, pm_b, a) {
+                pixels[i] = color;
+            }
+        }
+
+        // Blit image pixmap to main pixmap with alpha blending
+        let x_int = x.round() as i32;
+        let y_int = y.round() as i32;
+
+        pixmap.draw_pixmap(
+            x_int,
+            y_int,
+            img_pixmap.as_ref(),
+            &PixmapPaint::default(),
+            Transform::identity(),
+            None,
+        );
     }
 
     /// Render an icon to a pixmap
@@ -430,11 +524,28 @@ impl IconRenderer {
                         self.render_text(pixmap, text, *x, *y, *size, text_color, alignment);
                     }
                 }
-                DrawCommand::Image { .. } => {
-                    // Image rendering would need additional implementation
+                DrawCommand::Image { path, x, y, w, h } => {
+                    self.render_image(pixmap, path, *x, *y, *w, *h);
                 }
-                DrawCommand::StrokeCircle { .. } => {
-                    // StrokeCircle rendering would need additional implementation
+                DrawCommand::StrokeCircle { cx, cy, r, color, width } => {
+                    if let Some(color) = parse_color(color) {
+                        let mut paint = Paint::default();
+                        paint.set_color(color);
+
+                        let stroke = Stroke {
+                            width: *width,
+                            line_cap: LineCap::Round,
+                            line_join: LineJoin::Round,
+                            ..Default::default()
+                        };
+
+                        let mut pb = PathBuilder::new();
+                        pb.push_circle(*cx, *cy, *r);
+
+                        if let Some(path) = pb.finish() {
+                            pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+                        }
+                    }
                 }
             }
         }
@@ -1284,5 +1395,311 @@ mod tests {
 
         let result = renderer.execute_commands(&mut pixmap, &commands);
         assert!(result.is_ok(), "Text with alpha should not cause error");
+    }
+
+    // ========================================================================
+    // Image Rendering Tests
+    // ========================================================================
+
+    #[test]
+    fn test_render_image_missing_file_graceful() {
+        let renderer = IconRenderer::new(64, 12.0);
+        let mut pixmap = Pixmap::new(64, 64).unwrap();
+        pixmap.fill(Color::from_rgba8(0, 0, 0, 255));
+
+        // Attempt to render a non-existent image - should not panic
+        renderer.render_image(&mut pixmap, "/nonexistent/image.png", 0.0, 0.0, 32.0, 32.0);
+
+        // Pixmap should be unchanged (still black)
+        let pixel = pixmap.pixel(16, 16).unwrap();
+        assert_eq!(pixel.red(), 0, "Pixmap should be unchanged when image fails to load");
+    }
+
+    #[test]
+    fn test_render_image_zero_dimensions() {
+        let renderer = IconRenderer::new(64, 12.0);
+        let mut pixmap = Pixmap::new(64, 64).unwrap();
+        pixmap.fill(Color::from_rgba8(128, 128, 128, 255));
+
+        // Zero width
+        renderer.render_image(&mut pixmap, "/some/image.png", 0.0, 0.0, 0.0, 32.0);
+
+        // Zero height
+        renderer.render_image(&mut pixmap, "/some/image.png", 0.0, 0.0, 32.0, 0.0);
+
+        // Negative dimensions
+        renderer.render_image(&mut pixmap, "/some/image.png", 0.0, 0.0, -10.0, 32.0);
+
+        // Pixmap should be unchanged
+        let pixel = pixmap.pixel(16, 16).unwrap();
+        assert_eq!(pixel.red(), 128, "Pixmap should be unchanged with invalid dimensions");
+    }
+
+    #[test]
+    fn test_image_command_executes_without_error() {
+        let renderer = IconRenderer::new(64, 12.0);
+        let mut pixmap = Pixmap::new(64, 64).unwrap();
+
+        // DrawCommand::Image with non-existent file should not cause error
+        let commands = vec![DrawCommand::Image {
+            path: "/nonexistent/test.png".to_string(),
+            x: 0.0,
+            y: 0.0,
+            w: 32.0,
+            h: 32.0,
+        }];
+
+        let result = renderer.execute_commands(&mut pixmap, &commands);
+        assert!(result.is_ok(), "Image command with missing file should not cause error");
+    }
+
+    #[test]
+    fn test_render_image_with_temp_png() {
+        let renderer = IconRenderer::new(64, 12.0);
+        let mut pixmap = Pixmap::new(64, 64).unwrap();
+        pixmap.fill(Color::from_rgba8(0, 0, 0, 255));
+
+        // Create a small test PNG image programmatically
+        let temp_dir = std::env::temp_dir();
+        let temp_path = temp_dir.join("cvh_test_image.png");
+
+        // Create a simple 4x4 red image using the image crate
+        let mut img = image::RgbaImage::new(4, 4);
+        for pixel in img.pixels_mut() {
+            *pixel = image::Rgba([255, 0, 0, 255]); // Red
+        }
+
+        // Save to temp file
+        if let Err(e) = img.save(&temp_path) {
+            eprintln!("Could not save test image: {}", e);
+            return; // Skip test if we can't write temp file
+        }
+
+        // Render the image
+        let path_str = temp_path.to_string_lossy().to_string();
+        renderer.render_image(&mut pixmap, &path_str, 10.0, 10.0, 20.0, 20.0);
+
+        // Check that something was drawn (center of where image should be)
+        let pixel = pixmap.pixel(20, 20).unwrap();
+        assert!(pixel.red() > 0, "Image should have been rendered with red color");
+
+        // Clean up
+        let _ = std::fs::remove_file(&temp_path);
+    }
+
+    #[test]
+    fn test_render_image_scaling() {
+        let renderer = IconRenderer::new(128, 12.0);
+        let mut pixmap = Pixmap::new(128, 128).unwrap();
+        pixmap.fill(Color::from_rgba8(0, 0, 0, 255));
+
+        // Create a small 2x2 test image
+        let temp_dir = std::env::temp_dir();
+        let temp_path = temp_dir.join("cvh_test_scale.png");
+
+        let mut img = image::RgbaImage::new(2, 2);
+        // Make it green
+        for pixel in img.pixels_mut() {
+            *pixel = image::Rgba([0, 255, 0, 255]);
+        }
+
+        if let Err(e) = img.save(&temp_path) {
+            eprintln!("Could not save test image: {}", e);
+            return;
+        }
+
+        // Render scaled to 64x64
+        let path_str = temp_path.to_string_lossy().to_string();
+        renderer.render_image(&mut pixmap, &path_str, 0.0, 0.0, 64.0, 64.0);
+
+        // Check center of scaled image
+        let pixel = pixmap.pixel(32, 32).unwrap();
+        assert!(pixel.green() > 0, "Scaled image should be green");
+
+        // Check outside image area (should still be black)
+        let outside = pixmap.pixel(100, 100).unwrap();
+        assert_eq!(outside.green(), 0, "Area outside image should be unchanged");
+
+        // Clean up
+        let _ = std::fs::remove_file(&temp_path);
+    }
+
+    #[test]
+    fn test_render_image_with_transparency() {
+        let renderer = IconRenderer::new(64, 12.0);
+        let mut pixmap = Pixmap::new(64, 64).unwrap();
+        // Fill with blue background
+        pixmap.fill(Color::from_rgba8(0, 0, 255, 255));
+
+        // Create a 4x4 image with 50% transparent red
+        let temp_dir = std::env::temp_dir();
+        let temp_path = temp_dir.join("cvh_test_alpha.png");
+
+        let mut img = image::RgbaImage::new(4, 4);
+        for pixel in img.pixels_mut() {
+            *pixel = image::Rgba([255, 0, 0, 128]); // Red with 50% alpha
+        }
+
+        if let Err(e) = img.save(&temp_path) {
+            eprintln!("Could not save test image: {}", e);
+            return;
+        }
+
+        let path_str = temp_path.to_string_lossy().to_string();
+        renderer.render_image(&mut pixmap, &path_str, 10.0, 10.0, 20.0, 20.0);
+
+        // Check blended pixel - should have both red and blue components
+        let pixel = pixmap.pixel(20, 20).unwrap();
+        // Due to alpha blending, we should see some red mixed with blue
+        assert!(pixel.red() > 0, "Should have red component from semi-transparent image");
+        assert!(pixel.blue() > 0, "Should have blue component from background");
+
+        // Clean up
+        let _ = std::fs::remove_file(&temp_path);
+    }
+
+    #[test]
+    fn test_image_command_integration() {
+        let renderer = IconRenderer::new(64, 12.0);
+        let mut pixmap = Pixmap::new(64, 64).unwrap();
+        pixmap.fill(Color::from_rgba8(255, 255, 255, 255));
+
+        // Create test image
+        let temp_dir = std::env::temp_dir();
+        let temp_path = temp_dir.join("cvh_test_cmd.png");
+
+        let mut img = image::RgbaImage::new(8, 8);
+        for pixel in img.pixels_mut() {
+            *pixel = image::Rgba([128, 64, 192, 255]); // Purple-ish
+        }
+
+        if let Err(e) = img.save(&temp_path) {
+            eprintln!("Could not save test image: {}", e);
+            return;
+        }
+
+        let path_str = temp_path.to_string_lossy().to_string();
+        let commands = vec![DrawCommand::Image {
+            path: path_str,
+            x: 0.0,
+            y: 0.0,
+            w: 32.0,
+            h: 32.0,
+        }];
+
+        let result = renderer.execute_commands(&mut pixmap, &commands);
+        assert!(result.is_ok(), "Image command should execute successfully");
+
+        // Verify image was rendered
+        let pixel = pixmap.pixel(16, 16).unwrap();
+        assert!(pixel.red() < 255, "Pixel should no longer be white");
+
+        // Clean up
+        let _ = std::fs::remove_file(&temp_path);
+    }
+
+    #[test]
+    fn test_render_image_outside_bounds() {
+        let renderer = IconRenderer::new(64, 12.0);
+        let mut pixmap = Pixmap::new(64, 64).unwrap();
+
+        // Create a test image
+        let temp_dir = std::env::temp_dir();
+        let temp_path = temp_dir.join("cvh_test_bounds.png");
+
+        let mut img = image::RgbaImage::new(4, 4);
+        for pixel in img.pixels_mut() {
+            *pixel = image::Rgba([255, 0, 0, 255]);
+        }
+
+        if let Err(e) = img.save(&temp_path) {
+            eprintln!("Could not save test image: {}", e);
+            return;
+        }
+
+        let path_str = temp_path.to_string_lossy().to_string();
+
+        // Render outside pixmap bounds - should not panic
+        renderer.render_image(&mut pixmap, &path_str, -100.0, -100.0, 32.0, 32.0);
+        renderer.render_image(&mut pixmap, &path_str, 200.0, 200.0, 32.0, 32.0);
+
+        // Clean up
+        let _ = std::fs::remove_file(&temp_path);
+    }
+
+    // ========================================================================
+    // StrokeCircle Tests
+    // ========================================================================
+
+    #[test]
+    fn test_stroke_circle_draws_outline() {
+        let renderer = IconRenderer::new(64, 12.0);
+        let mut pixmap = Pixmap::new(64, 64).unwrap();
+        pixmap.fill(Color::from_rgba8(0, 0, 0, 255));
+
+        let commands = vec![DrawCommand::StrokeCircle {
+            cx: 32.0,
+            cy: 32.0,
+            r: 20.0,
+            color: "#ffffff".to_string(),
+            width: 2.0,
+        }];
+
+        renderer.execute_commands(&mut pixmap, &commands).unwrap();
+
+        // Check a pixel on the edge of the circle (approximately at radius distance)
+        // The circle is at (32, 32) with radius 20, so (52, 32) should be on the edge
+        let edge_pixel = pixmap.pixel(52, 32).unwrap();
+        assert!(
+            edge_pixel.red() > 0 || edge_pixel.green() > 0 || edge_pixel.blue() > 0,
+            "Edge pixel should have stroke color"
+        );
+
+        // Check center of circle (should still be black - it's just an outline)
+        let center_pixel = pixmap.pixel(32, 32).unwrap();
+        assert_eq!(center_pixel.red(), 0, "Center pixel should be black (not filled)");
+    }
+
+    #[test]
+    fn test_stroke_circle_with_color() {
+        let renderer = IconRenderer::new(64, 12.0);
+        let mut pixmap = Pixmap::new(64, 64).unwrap();
+        pixmap.fill(Color::from_rgba8(0, 0, 0, 255));
+
+        let commands = vec![DrawCommand::StrokeCircle {
+            cx: 32.0,
+            cy: 32.0,
+            r: 15.0,
+            color: "#ff0000".to_string(), // Red
+            width: 3.0,
+        }];
+
+        renderer.execute_commands(&mut pixmap, &commands).unwrap();
+
+        // Check for red on the circle edge
+        let edge_pixel = pixmap.pixel(47, 32).unwrap(); // 32 + 15 = 47
+        assert!(edge_pixel.red() > 0, "Circle stroke should be red");
+    }
+
+    #[test]
+    fn test_stroke_circle_with_invalid_color() {
+        let renderer = IconRenderer::new(64, 12.0);
+        let mut pixmap = Pixmap::new(64, 64).unwrap();
+        pixmap.fill(Color::from_rgba8(128, 128, 128, 255));
+
+        let commands = vec![DrawCommand::StrokeCircle {
+            cx: 32.0,
+            cy: 32.0,
+            r: 15.0,
+            color: "invalid".to_string(),
+            width: 2.0,
+        }];
+
+        let result = renderer.execute_commands(&mut pixmap, &commands);
+        assert!(result.is_ok(), "Invalid color should not cause error");
+
+        // Pixmap should be unchanged
+        let pixel = pixmap.pixel(32, 32).unwrap();
+        assert_eq!(pixel.red(), 128, "Pixmap should be unchanged with invalid color");
     }
 }

@@ -15,6 +15,11 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::Config;
 use crate::icons::{DesktopIcon, IconType};
+use crate::renderer::IconRenderer;
+use crate::wayland::{InputEvent, SurfaceId, WaylandManager};
+
+/// Height reserved for the label area below the icon
+const LABEL_HEIGHT: u32 = 24;
 
 /// Icon daemon that manages desktop icons
 pub struct IconDaemon {
@@ -23,6 +28,19 @@ pub struct IconDaemon {
     icons: HashMap<PathBuf, DesktopIcon>,
     watcher: Option<RecommendedWatcher>,
     event_sender: Option<Sender<notify::Result<Event>>>,
+    /// Wayland manager for surfaces and input
+    wayland: Option<WaylandManager>,
+    /// Icon renderer
+    renderer: IconRenderer,
+    /// Map surface IDs to icon paths for event routing
+    surface_to_path: HashMap<SurfaceId, PathBuf>,
+    /// Map icon paths to surface IDs
+    path_to_surface: HashMap<PathBuf, SurfaceId>,
+    /// Default screen dimensions (will be updated from outputs)
+    screen_width: u32,
+    screen_height: u32,
+    /// Flag indicating icons need to be re-rendered
+    needs_render: bool,
 }
 
 impl IconDaemon {
@@ -30,12 +48,41 @@ impl IconDaemon {
     pub fn new(config: Config, desktop_dir: PathBuf) -> Result<Self> {
         info!("Initializing icon daemon for {}", desktop_dir.display());
 
+        // Try to create Wayland manager (may fail if not on Wayland)
+        let wayland = match WaylandManager::new() {
+            Ok(wm) => {
+                info!("Wayland manager initialized successfully");
+                Some(wm)
+            }
+            Err(e) => {
+                warn!("Failed to initialize Wayland manager: {} (running without display)", e);
+                None
+            }
+        };
+
+        // Create renderer
+        let renderer = IconRenderer::new(config.icon_size, config.font_size);
+
+        // Get initial screen dimensions from Wayland if available
+        let (screen_width, screen_height) = if let Some(ref wm) = wayland {
+            wm.get_output_dimensions().unwrap_or((1920, 1080))
+        } else {
+            (1920, 1080)
+        };
+
         let mut daemon = Self {
             config,
             desktop_dir,
             icons: HashMap::new(),
             watcher: None,
             event_sender: None,
+            wayland,
+            renderer,
+            surface_to_path: HashMap::new(),
+            path_to_surface: HashMap::new(),
+            screen_width,
+            screen_height,
+            needs_render: true, // Initial render needed
         };
 
         // Initial scan of desktop directory
@@ -126,6 +173,48 @@ impl IconDaemon {
             }
         }
 
+        // Calculate position for this icon
+        // Use full height including label area for grid calculations
+        let surface_height = self.config.icon_size + LABEL_HEIGHT;
+        let cell_width = self.config.icon_size + self.config.grid_spacing;
+        let cell_height = surface_height + self.config.grid_spacing;
+
+        let icon_count = self.icons.len() as u32;
+        let icon_index = icon_count;
+        let position = icon.request_position(
+            self.screen_width,
+            self.screen_height,
+            icon_count + 1,
+            icon_index,
+            Some(cell_width),
+            Some(cell_height),
+        );
+
+        // Create Wayland surface for this icon with full height including label
+        if let Some(ref mut wayland) = self.wayland {
+            match wayland.create_surface(
+                position.x,
+                position.y,
+                self.config.icon_size,
+                surface_height,
+            ) {
+                Ok(surface_id) => {
+                    debug!(
+                        "Created surface {} for icon: {} at ({}, {})",
+                        surface_id,
+                        path.display(),
+                        position.x,
+                        position.y
+                    );
+                    self.surface_to_path.insert(surface_id, path.to_path_buf());
+                    self.path_to_surface.insert(path.to_path_buf(), surface_id);
+                }
+                Err(e) => {
+                    warn!("Failed to create surface for {}: {}", path.display(), e);
+                }
+            }
+        }
+
         debug!("Added icon for: {}", path.display());
         self.icons.insert(path.to_path_buf(), icon);
 
@@ -185,6 +274,16 @@ impl IconDaemon {
         if let Some(mut icon) = self.icons.remove(path) {
             // Kill the Lua process before removing the icon
             icon.kill_lua_process();
+
+            // Destroy the Wayland surface
+            if let Some(surface_id) = self.path_to_surface.remove(path) {
+                if let Some(ref mut wayland) = self.wayland {
+                    wayland.destroy_surface(surface_id);
+                    debug!("Destroyed surface {} for icon: {}", surface_id, path.display());
+                }
+                self.surface_to_path.remove(&surface_id);
+            }
+
             debug!("Removed icon for: {}", path.display());
         }
     }
@@ -198,11 +297,13 @@ impl IconDaemon {
                 for path in event.paths {
                     self.add_icon(&path)?;
                 }
+                self.needs_render = true;
             }
             EventKind::Remove(_) => {
                 for path in event.paths {
                     self.remove_icon(&path);
                 }
+                self.needs_render = true;
             }
             EventKind::Modify(_) => {
                 // Refresh icons if metadata changed
@@ -212,6 +313,7 @@ impl IconDaemon {
                         self.add_icon(&path)?;
                     }
                 }
+                self.needs_render = true;
             }
             _ => {}
         }
@@ -234,6 +336,210 @@ impl IconDaemon {
         // Remove icons for deleted files
         for path in to_remove {
             self.remove_icon(&path);
+        }
+    }
+
+    /// Render all icons to their Wayland surfaces
+    fn render_icons_to_surfaces(&mut self) {
+        // Only render if we have a Wayland connection and something needs rendering
+        if self.wayland.is_none() || !self.needs_render {
+            return;
+        }
+
+        let icon_size = self.config.icon_size;
+        let surface_height = icon_size + LABEL_HEIGHT;
+
+        // Collect paths to render (to avoid borrowing conflicts)
+        let paths: Vec<PathBuf> = self.icons.keys().cloned().collect();
+
+        for path in paths {
+            // Get the surface ID for this icon
+            let surface_id = match self.path_to_surface.get(&path) {
+                Some(&id) => id,
+                None => continue,
+            };
+
+            // Get render commands from the icon (use full height including label)
+            let commands = if let Some(icon) = self.icons.get_mut(&path) {
+                icon.request_render(icon_size, surface_height, 1.0)
+            } else {
+                continue;
+            };
+
+            // Create pixmap and render commands (use full height including label)
+            if let Some(mut pixmap) = tiny_skia::Pixmap::new(icon_size, surface_height) {
+                // Execute draw commands
+                if let Err(e) = self.renderer.execute_commands(&mut pixmap, &commands) {
+                    warn!("Failed to execute draw commands for {}: {}", path.display(), e);
+                    continue;
+                }
+
+                // Get pixel data
+                let pixels = pixmap.data();
+
+                // Attach buffer to surface
+                if let Some(ref mut wayland) = self.wayland {
+                    if let Err(e) = wayland.attach_buffer(
+                        surface_id,
+                        pixels,
+                        icon_size,
+                        surface_height,
+                    ) {
+                        warn!("Failed to attach buffer to surface {}: {}", surface_id, e);
+                    }
+                }
+            }
+        }
+
+        // Clear the dirty flag after rendering
+        self.needs_render = false;
+    }
+
+    /// Handle Wayland input events
+    fn handle_wayland_input(&mut self) {
+        // Only process if we have a Wayland connection
+        let events = if let Some(ref mut wayland) = self.wayland {
+            wayland.take_input_events()
+        } else {
+            return;
+        };
+
+        for event in events {
+            match event {
+                InputEvent::PointerEnter { surface_id, .. } => {
+                    // Set hovered state on the icon
+                    if let Some(path) = self.surface_to_path.get(&surface_id) {
+                        if let Some(icon) = self.icons.get_mut(path) {
+                            icon.set_hovered(true);
+                            self.needs_render = true;
+                            debug!("Pointer entered icon: {}", path.display());
+                        }
+                    }
+                }
+                InputEvent::PointerLeave { surface_id } => {
+                    // Clear hovered state
+                    if let Some(path) = self.surface_to_path.get(&surface_id) {
+                        if let Some(icon) = self.icons.get_mut(path) {
+                            icon.set_hovered(false);
+                            self.needs_render = true;
+                            debug!("Pointer left icon: {}", path.display());
+                        }
+                    }
+                }
+                InputEvent::PointerMotion { surface_id, x, y } => {
+                    // Could track position for hover effects
+                    debug!("Pointer motion on surface {} at ({}, {})", surface_id, x, y);
+                }
+                InputEvent::PointerButton { surface_id, button, pressed, .. } => {
+                    if pressed {
+                        // Button pressed - handle click
+                        if let Some(path) = self.surface_to_path.get(&surface_id).cloned() {
+                            if let Some(icon) = self.icons.get_mut(&path) {
+                                // Linux mouse button codes: 272 = left, 273 = right, 274 = middle
+                                let button_num = match button {
+                                    272 => 1, // Left button
+                                    273 => 3, // Right button
+                                    274 => 2, // Middle button
+                                    _ => button,
+                                };
+                                match icon.on_click(button_num) {
+                                    Ok(action) => {
+                                        self.needs_render = true;
+                                        debug!(
+                                            "Click on icon {} button {}: {:?}",
+                                            path.display(),
+                                            button_num,
+                                            action
+                                        );
+                                    }
+                                    Err(e) => {
+                                        warn!("Error handling click on {}: {}", path.display(), e);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Dispatch Wayland events
+    fn dispatch_wayland(&mut self) {
+        if let Some(ref mut wayland) = self.wayland {
+            if let Err(e) = wayland.dispatch_events() {
+                error!("Wayland dispatch error: {}", e);
+            }
+        }
+    }
+
+    /// Check if Wayland manager wants to exit
+    fn wayland_should_exit(&self) -> bool {
+        if let Some(ref wayland) = self.wayland {
+            wayland.should_exit()
+        } else {
+            false
+        }
+    }
+
+    /// Update screen dimensions from Wayland outputs and reposition icons if changed
+    fn update_screen_dimensions(&mut self) {
+        let (new_width, new_height) = if let Some(ref wayland) = self.wayland {
+            wayland.get_output_dimensions().unwrap_or((self.screen_width, self.screen_height))
+        } else {
+            return;
+        };
+
+        // Check if dimensions changed
+        if new_width != self.screen_width || new_height != self.screen_height {
+            info!(
+                "Screen dimensions changed from {}x{} to {}x{}",
+                self.screen_width, self.screen_height, new_width, new_height
+            );
+            self.screen_width = new_width;
+            self.screen_height = new_height;
+
+            // Reposition all icons
+            self.reposition_all_icons();
+            self.needs_render = true;
+        }
+    }
+
+    /// Reposition all icon surfaces based on current screen dimensions
+    fn reposition_all_icons(&mut self) {
+        let surface_height = self.config.icon_size + LABEL_HEIGHT;
+        let cell_width = self.config.icon_size + self.config.grid_spacing;
+        let cell_height = surface_height + self.config.grid_spacing;
+        let icon_count = self.icons.len() as u32;
+
+        // Collect (path, surface_id) pairs to reposition
+        let to_reposition: Vec<(PathBuf, SurfaceId)> = self.path_to_surface
+            .iter()
+            .map(|(p, &s)| (p.clone(), s))
+            .collect();
+
+        for (index, (path, surface_id)) in to_reposition.into_iter().enumerate() {
+            if let Some(icon) = self.icons.get_mut(&path) {
+                let position = icon.request_position(
+                    self.screen_width,
+                    self.screen_height,
+                    icon_count,
+                    index as u32,
+                    Some(cell_width),
+                    Some(cell_height),
+                );
+
+                // Update surface position
+                if let Some(ref mut wayland) = self.wayland {
+                    wayland.set_surface_position(surface_id, position.x, position.y);
+                    debug!(
+                        "Repositioned icon {} to ({}, {})",
+                        path.display(),
+                        position.x,
+                        position.y
+                    );
+                }
+            }
         }
     }
 
@@ -350,9 +656,21 @@ impl IconDaemon {
 
         info!("Entering calloop dispatch loop");
 
+        // Do initial render of all icons
+        self.render_icons_to_surfaces();
+
         // Main event loop
         loop {
-            // Dispatch events (blocking with timeout)
+            // Dispatch Wayland events first
+            self.dispatch_wayland();
+
+            // Handle any Wayland input events
+            self.handle_wayland_input();
+
+            // Check for screen dimension changes from Wayland outputs
+            self.update_screen_dimensions();
+
+            // Dispatch calloop events (blocking with timeout)
             event_loop
                 .dispatch(Some(Duration::from_millis(16)), &mut state)
                 .context("Event loop dispatch failed")?;
@@ -370,8 +688,11 @@ impl IconDaemon {
                 state.should_update_icons = false;
             }
 
+            // Only render if something changed (dirty flag is checked inside render_icons_to_surfaces)
+            self.render_icons_to_surfaces();
+
             // Check if we should stop
-            if state.should_stop {
+            if state.should_stop || self.wayland_should_exit() {
                 info!("Daemon stopping");
                 break;
             }
@@ -420,12 +741,21 @@ mod tests {
 
     /// Helper to create a test daemon without watchers (for unit testing)
     fn create_test_daemon(desktop_dir: PathBuf) -> IconDaemon {
+        let config = test_config();
+        let renderer = IconRenderer::new(config.icon_size, config.font_size);
         IconDaemon {
-            config: test_config(),
+            config,
             desktop_dir,
             icons: HashMap::new(),
             watcher: None,
             event_sender: None,
+            wayland: None, // No Wayland in tests
+            renderer,
+            surface_to_path: HashMap::new(),
+            path_to_surface: HashMap::new(),
+            screen_width: 1920,
+            screen_height: 1080,
+            needs_render: false,
         }
     }
 
@@ -642,13 +972,7 @@ mod tests {
         fs::create_dir(&hidden_folder).unwrap();
 
         // Create daemon and scan
-        let mut daemon = IconDaemon {
-            config: test_config(),
-            desktop_dir: desktop_path.clone(),
-            icons: HashMap::new(),
-            watcher: None,
-            event_sender: None,
-        };
+        let mut daemon = create_test_daemon(desktop_path.clone());
 
         daemon.scan_desktop().unwrap();
 
@@ -675,13 +999,7 @@ mod tests {
         fs::write(&dot_ds_store, "").unwrap();
         fs::write(&normal_file, "").unwrap();
 
-        let mut daemon = IconDaemon {
-            config: test_config(),
-            desktop_dir: desktop_path,
-            icons: HashMap::new(),
-            watcher: None,
-            event_sender: None,
-        };
+        let mut daemon = create_test_daemon(desktop_path);
 
         daemon.scan_desktop().unwrap();
 
@@ -697,13 +1015,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let desktop_path = temp_dir.path().to_path_buf();
 
-        let mut daemon = IconDaemon {
-            config: test_config(),
-            desktop_dir: desktop_path,
-            icons: HashMap::new(),
-            watcher: None,
-            event_sender: None,
-        };
+        let mut daemon = create_test_daemon(desktop_path);
 
         daemon.scan_desktop().unwrap();
 
@@ -714,13 +1026,7 @@ mod tests {
     fn test_scan_desktop_nonexistent_directory() {
         let nonexistent_path = PathBuf::from("/nonexistent/desktop/path/12345");
 
-        let mut daemon = IconDaemon {
-            config: test_config(),
-            desktop_dir: nonexistent_path,
-            icons: HashMap::new(),
-            watcher: None,
-            event_sender: None,
-        };
+        let mut daemon = create_test_daemon(nonexistent_path);
 
         // Should not error, just return Ok with no icons
         let result = daemon.scan_desktop();
