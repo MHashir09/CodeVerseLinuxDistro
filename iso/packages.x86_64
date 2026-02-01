@@ -227,3 +227,10 @@ loupe
 file-roller
 nwg-look
 tangram
+
+# =============================================================================
+# MISCELLANEOUS STUFF THAT IS NOT ON PACMAN
+# =============================================================================
+# ---  Brave browser, requires AUR ( yay -S brave-bin ) ---
+# --- Oh my zsh, requires to be installed by running this in the terminal:
+# sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" ---
